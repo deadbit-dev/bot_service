@@ -1,0 +1,16 @@
+services:
+  bot-service:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:?Set ORCHESTRATOR_URL}
+      ORCHESTRATOR_QUEUE_URL: ${ORCHESTRATOR_QUEUE_URL:?Set ORCHESTRATOR_QUEUE_URL}
+    volumes:
+      - bot_state:/data
+      - ../localization/dist:/app/localization/dist:ro
+    restart: unless-stopped
+
+volumes:
+  bot_state:
