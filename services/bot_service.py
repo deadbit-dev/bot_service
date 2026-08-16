@@ -62,12 +62,12 @@ def load_language_pack(dist_dir, language):
 
 def validate_queue_endpoint(lobby_url, queue_url):
     lobby, queue = urllib.parse.urlsplit(lobby_url), urllib.parse.urlsplit(queue_url)
-    local_hosts = {"localhost", "127.0.0.1", "::1"}
+    local_hosts = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
     if not lobby.hostname or not queue.hostname or lobby.hostname.lower() != queue.hostname.lower():
         raise ValueError("ORCHESTRATOR_QUEUE_URL host must match ORCHESTRATOR_URL")
     local = queue.hostname.lower() in local_hosts
     if queue.scheme != "https" and not (local and queue.scheme == "http"):
-        raise ValueError("ORCHESTRATOR_QUEUE_URL must use HTTPS outside localhost")
+        raise ValueError("ORCHESTRATOR_QUEUE_URL must use HTTPS outside the local Docker host")
     expected_lobby_scheme = "ws" if queue.scheme == "http" else "wss"
     if lobby.scheme != expected_lobby_scheme:
         raise ValueError(f"ORCHESTRATOR_URL must use {expected_lobby_scheme.upper()} for the queue URL")

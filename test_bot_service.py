@@ -92,6 +92,7 @@ class QueueTests(unittest.TestCase):
         self.assertIs(queue_target(entries, {"en": "1"}), entries[-1])
 
     def test_rejects_untrusted_queue_urls_and_redirects(self):
+        validate_queue_endpoint("ws://host.docker.internal:9000/", "http://host.docker.internal:9001/v1/matchmaking/queue")
         with self.assertRaises(ValueError):
             validate_queue_endpoint("wss://game.example.com/", "http://game.example.com/queue")
         with self.assertRaises(ValueError):
