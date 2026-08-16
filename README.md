@@ -1,4 +1,4 @@
-# Scrabble bot service
+# bot_service
 
 Outbound fallback bot workers for Scrabble. They poll the orchestrator queue API and only join a compatible fallback-eligible request.
 
