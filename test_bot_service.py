@@ -1,13 +1,49 @@
 import json
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from services.bot_service import (
     BotService, Brain, _NoRedirect, bot_name, configure_pool, next_queue_target,
     queue_target, read_pool, ticket_is_admitted, validate_queue_endpoint, worker_state_path,
 )
+
+
+class FakeConnection:
+    """Stand-in for a `websockets` connection: an async context manager and
+    async iterator over pre-scripted incoming messages."""
+
+    def __init__(self, messages):
+        self._messages = list(messages)
+        self.sent = []
+
+    async def send(self, message):
+        self.sent.append(json.loads(message))
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._messages:
+            raise StopAsyncIteration
+        return self._messages.pop(0)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class FakeWebsocketsModule:
+    def __init__(self, connection):
+        self._connection = connection
+
+    def connect(self, url, max_size=None):
+        return self._connection
 
 
 def trie(words):
@@ -76,9 +112,14 @@ class PoolTests(unittest.TestCase):
             service.state["active"] = {"match_id": "gone"}
             service.save()
 
-            self.assertFalse(service.clear_missing_match("profile_mismatch"))
-            self.assertTrue(service.clear_missing_match("match_not_found"))
+            # Any error code abandons an active match -- wedging a pool slot
+            # is always worse than abandoning it.
+            self.assertTrue(service.abandon_active_match("profile_mismatch"))
             self.assertNotIn("active", json.loads(path.read_text()))
+
+            # Nothing left to abandon: caller should treat this as unrelated
+            # to a match and back off instead.
+            self.assertFalse(service.abandon_active_match("match_not_found"))
 
 
 class QueueTests(unittest.TestCase):
@@ -105,6 +146,73 @@ class QueueTests(unittest.TestCase):
         second = type("Worker", (), {"admission": None})()
         self.assertTrue(ticket_is_admitted((first, second), ticket))
         self.assertFalse(ticket_is_admitted((second,), ticket))
+
+
+class LobbyAssignmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_match_id_does_not_inherit_stale_resume_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = BotService("wss://lobby", "", "Bot", "ru", "1", None, Path(directory) / "state.json")
+            service.state["active"] = {
+                "match_id": "M1", "player_id": "p1", "resume_token": "stale-token", "server_id": "s1",
+            }
+            service.save()
+            connection = FakeConnection([json.dumps({
+                "type": "match_assigned", "match_id": "M2",
+                "payload": {"player_id": "p2", "join_token": "jt2", "server_id": "s2", "server_url": "u2"},
+            })])
+
+            with patch.dict(sys.modules, {"websockets": FakeWebsocketsModule(connection)}):
+                active = await service.lobby_assignment()
+
+            self.assertEqual(active["match_id"], "M2")
+            self.assertNotIn("resume_token", active)
+            self.assertNotIn("resume_token", service.state["active"])
+
+    async def test_same_match_id_merges_and_keeps_resume_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = BotService("wss://lobby", "", "Bot", "ru", "1", None, Path(directory) / "state.json")
+            service.state["active"] = {
+                "match_id": "M1", "player_id": "p1", "resume_token": "keep-me", "server_id": "s1",
+            }
+            service.save()
+            connection = FakeConnection([json.dumps({
+                "type": "match_assigned", "match_id": "M1",
+                "payload": {"player_id": "p1", "join_token": "jt-new", "server_id": "s2", "server_url": "u2"},
+            })])
+
+            with patch.dict(sys.modules, {"websockets": FakeWebsocketsModule(connection)}):
+                active = await service.lobby_assignment()
+
+            self.assertEqual(active["resume_token"], "keep-me")
+            self.assertEqual(active["join_token"], "jt-new")
+
+    async def test_arbitrary_error_code_abandons_active_match_without_wedging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = BotService("wss://lobby", "", "Bot", "ru", "1", None, Path(directory) / "state.json")
+            service.state["active"] = {"match_id": "M1", "player_id": "p1", "resume_token": "tok", "server_id": "s1"}
+            service.save()
+            service.admission = {"ticket_id": "t1"}  # so the bot re-queues instead of retiring
+            connection = FakeConnection([json.dumps({
+                "type": "error", "payload": {"code": "invalid_resume_token"},
+            })])
+
+            with patch.dict(sys.modules, {"websockets": FakeWebsocketsModule(connection)}):
+                with self.assertRaises(ConnectionError):
+                    await service.lobby_assignment()
+
+            self.assertNotIn("active", service.state)
+            self.assertEqual(connection.sent[-1]["type"], "find_match")
+
+    async def test_error_without_active_match_still_raises_for_backoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = BotService("wss://lobby", "", "Bot", "ru", "1", None, Path(directory) / "state.json")
+            connection = FakeConnection([json.dumps({
+                "type": "error", "payload": {"code": "profile_service_unavailable"},
+            })])
+
+            with patch.dict(sys.modules, {"websockets": FakeWebsocketsModule(connection)}):
+                with self.assertRaises(RuntimeError):
+                    await service.lobby_assignment()
 
 
 class TurnTimingTests(unittest.IsolatedAsyncioTestCase):

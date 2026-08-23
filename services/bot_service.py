@@ -360,11 +360,19 @@ class BotService:
         temporary.write_text(json.dumps(self.state, separators=(",", ":")))
         temporary.replace(self.state_path)
 
-    def clear_missing_match(self, code):
-        if code != "match_not_found":
+    def abandon_active_match(self, code):
+        """Drop a wedged match assignment so the bot returns to the pool.
+
+        Any match-scoped error is cheaper to abandon than to keep a slot
+        permanently wedged on `active` (see bot_service AGENTS notes). Errors
+        unrelated to a match (no `active` set) are left for the caller to
+        treat as a transient failure and back off.
+        """
+        active = self.state.pop("active", None)
+        if not active:
             return False
-        self.state.pop("active", None)
         self.save()
+        logging.warning("abandoning match %s after error %s", active.get("match_id"), code)
         return True
 
     async def send(self, websocket, message):
@@ -407,24 +415,28 @@ class BotService:
                             "player_id": active["player_id"], "join_token": active["join_token"], "server_id": active["server_id"],
                         }, active["match_id"]))
                 elif kind == "match_assigned":
-                    active = self.state.setdefault("active", {})
+                    incoming_match_id = message.get("match_id")
+                    previous = self.state.get("active")
+                    # A previous match's leftover fields (e.g. resume_token) must not
+                    # leak into a newly assigned, different match.
+                    active = previous if previous and previous.get("match_id") == incoming_match_id else {}
                     active.update({key: value for key, value in {
-                        "match_id": message.get("match_id"), "player_id": payload.get("player_id"),
+                        "match_id": incoming_match_id, "player_id": payload.get("player_id"),
                         "join_token": payload.get("join_token"), "server_id": payload.get("server_id"),
                         "server_url": payload.get("server_url"),
                     }.items() if value})
+                    self.state["active"] = active
                     self.save()
                     self.admission = None
                     return active
                 elif kind == "error":
-                    if self.state.get("active") and payload.get("code") in ("match_server_unavailable", "match_not_found"):
-                        self.state.pop("active", None)
-                        self.save()
+                    code = payload.get("code")
+                    if self.abandon_active_match(code):
                         if self.retire or not self.admission:
                             raise asyncio.CancelledError
                         await self.send(websocket, envelope("find_match", self.request_id("find"), self.find_match_payload()))
                     else:
-                        raise RuntimeError(f"lobby error: {payload.get('code')}")
+                        raise RuntimeError(f"lobby error: {code}")
         raise ConnectionError("lobby closed before assignment")
 
     @staticmethod
@@ -498,7 +510,7 @@ class BotService:
                         continue
                 elif kind == "error":
                     code = message.get("payload", {}).get("code")
-                    if self.clear_missing_match(code):
+                    if self.abandon_active_match(code):
                         return
                     raise RuntimeError(f"match error: {code}")
 
