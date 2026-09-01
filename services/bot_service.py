@@ -514,7 +514,7 @@ class BotService:
                         return
                     raise RuntimeError(f"match error: {code}")
 
-                if public_state and public_state.get("status") == "completed":
+                if public_state and public_state.get("status") in ("completed", "stopped"):
                     self.state.pop("active", None)
                     self.save()
                     return
@@ -535,6 +535,7 @@ class BotService:
                 raise
             except Exception as error:
                 logging.warning("bot connection failed: %s", error)
+                self.admission = None
                 await asyncio.sleep(2)
 
 

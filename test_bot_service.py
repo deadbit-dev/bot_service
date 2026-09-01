@@ -215,6 +215,24 @@ class LobbyAssignmentTests(unittest.IsolatedAsyncioTestCase):
                     await service.lobby_assignment()
 
 
+class StoppedMatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stopped_match_releases_the_bot(self):
+        """A match the server stops (opponent never joined) must free the slot."""
+        with tempfile.TemporaryDirectory() as directory:
+            service = BotService("wss://lobby", "wss://match", "Bot", "ru", "1", None, Path(directory) / "state.json")
+            service.state.update({"profile_token": "tok", "active": {"match_id": "M1", "player_id": "p2", "server_id": "s1"}})
+            service.save()
+            connection = FakeConnection([json.dumps({
+                "type": "match_state", "match_id": "M1",
+                "payload": {"state": {"status": "stopped", "turn": 0}},
+            })])
+
+            with patch.dict(sys.modules, {"websockets": FakeWebsocketsModule(connection)}):
+                await service.play_match(dict(service.state["active"]))
+
+            self.assertNotIn("active", service.state)
+
+
 class TurnTimingTests(unittest.IsolatedAsyncioTestCase):
     async def test_fast_search_waits_for_minimum_turn_time(self):
         class WebSocket:
