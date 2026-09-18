@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Low-priority Scrabble bot that speaks the normal player protocol."""
+"""Low-priority Wordness bot that speaks the normal player protocol."""
 import asyncio
 import json
 import logging

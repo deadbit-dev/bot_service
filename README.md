@@ -1,6 +1,6 @@
 # bot_service
 
-Outbound fallback bot workers for Scrabble. They poll the orchestrator queue API and only join a compatible fallback-eligible request.
+Outbound fallback bot workers for Wordness. They poll the orchestrator queue API and only join a compatible fallback-eligible request.
 
 Copy `.env.example` to `.env`, then run:
 
